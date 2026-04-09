@@ -1,0 +1,5 @@
+{
+  "name": "Split the Bill",
+  "description": "A fresh and intuitive web app to easily split bills, calculate taxes and discounts, and share the results via links or QR codes.",
+  "requestFramePermissions": []
+}
