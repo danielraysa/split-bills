@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useRef } from 'react'
-import { Plus, Trash2, Share2, Download, QrCode, Users, Receipt, Calculator, Check, RotateCcw } from 'lucide-react'
+import { Plus, Trash2, Share2, Download, QrCode, Users, Receipt, Calculator, Check, RotateCcw, Pencil } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -9,7 +9,7 @@ import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog'
 import { formatCurrency, generateId } from '@/lib/utils'
-import html2canvas from 'html2canvas'
+import { toPng } from 'html-to-image'
 import { QRCodeSVG } from 'qrcode.react'
 import { type Person, type Item, type BillData, calculateBillSplit } from '@/lib/calculator'
 
@@ -29,9 +29,11 @@ export default function BillSplitter() {
 
   const [activeTab, setActiveTab] = useState<'people' | 'items' | 'results'>('people')
   const [isResetDialogOpen, setIsResetDialogOpen] = useState(false)
+  const [editingPerson, setEditingPerson] = useState<Person | null>(null)
+  const [editingItem, setEditingItem] = useState<Item | null>(null)
   const receiptRef = useRef<HTMLDivElement>(null)
 
-  // Load from URL hash if available
+  // Load from URL hash or local storage if available
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsMounted(true)
@@ -44,19 +46,30 @@ export default function BillSplitter() {
         if (data.items) setItems(data.items)
         if (data.tax !== undefined) setTax(data.tax)
         if (data.discount !== undefined) setDiscount(data.discount)
+        
+        window.history.replaceState(null, '', window.location.pathname)
         setActiveTab('results')
+        return
+      }
+
+      const saved = localStorage.getItem('bill-splitter-data')
+      if (saved) {
+        const data = JSON.parse(saved) as BillData
+        if (data.people) setPeople(data.people)
+        if (data.items) setItems(data.items)
+        if (data.tax !== undefined) setTax(data.tax)
+        if (data.discount !== undefined) setDiscount(data.discount)
       }
     } catch (e) {
-      console.error('Failed to parse bill data from URL', e)
+      console.error('Failed to parse bill data', e)
     }
   }, [])
 
-  // Update URL hash when data changes
+  // Update local storage when data changes
   useEffect(() => {
     if (!isMounted) return
     const data: BillData = { people, items, tax, discount }
-    const dataStr = btoa(JSON.stringify(data))
-    window.history.replaceState(null, '', `#data=${encodeURIComponent(dataStr)}`)
+    localStorage.setItem('bill-splitter-data', JSON.stringify(data))
   }, [people, items, tax, discount, isMounted])
 
   const addPerson = () => {
@@ -111,6 +124,18 @@ export default function BillSplitter() {
     setItems(items.filter(item => item.id !== id))
   }
 
+  const saveEditedPerson = () => {
+    if (!editingPerson || !editingPerson.name.trim()) return
+    setPeople(people.map(p => p.id === editingPerson.id ? editingPerson : p))
+    setEditingPerson(null)
+  }
+
+  const saveEditedItem = () => {
+    if (!editingItem || !editingItem.name.trim() || isNaN(editingItem.price) || editingItem.sharedBy.length === 0) return
+    setItems(items.map(item => item.id === editingItem.id ? editingItem : item))
+    setEditingItem(null)
+  }
+
   const handleReset = () => {
     setPeople([])
     setItems([])
@@ -126,21 +151,29 @@ export default function BillSplitter() {
   const handleDownloadImage = async () => {
     if (!receiptRef.current) return
     try {
-      const canvas = await html2canvas(receiptRef.current, {
-        scale: 2,
+      const url = await toPng(receiptRef.current, {
         backgroundColor: '#ffffff',
+        pixelRatio: 2,
       })
-      const url = canvas.toDataURL('image/png')
       const link = document.createElement('a')
       link.download = 'bill-split.png'
       link.href = url
       link.click()
     } catch (err) {
       console.error('Failed to generate image', err)
+      alert('Failed to generate image. Try opening the app in a new tab if you are inside an iframe.')
     }
   }
 
-  const shareUrl = isMounted ? window.location.href : ''
+  const [shareUrl, setShareUrl] = useState('')
+
+  const generateShareUrl = () => {
+    const data: BillData = { people, items, tax, discount }
+    const dataStr = btoa(JSON.stringify(data))
+    const url = new URL(window.location.href)
+    url.hash = `data=${encodeURIComponent(dataStr)}`
+    setShareUrl(url.toString())
+  }
 
   const handleShare = async () => {
     if (navigator.share) {
@@ -243,9 +276,14 @@ export default function BillSplitter() {
                     people.map(person => (
                       <div key={person.id} className="flex items-center justify-between bg-muted/30 p-3 rounded-xl">
                         <span className="font-medium">{person.name}</span>
-                        <Button variant="ghost" size="icon" onClick={() => removePerson(person.id)} className="text-destructive hover:bg-destructive/10 h-8 w-8">
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="icon" onClick={() => setEditingPerson(person)} className="h-8 w-8 text-muted-foreground hover:text-foreground">
+                            <Pencil className="w-4 h-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => removePerson(person.id)} className="text-destructive hover:bg-destructive/10 h-8 w-8">
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
                       </div>
                     ))
                   )}
@@ -375,8 +413,11 @@ export default function BillSplitter() {
                             Shared by: {item.sharedBy.map(id => people.find(p => p.id === id)?.name).filter(Boolean).join(', ')}
                           </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <span className="font-semibold">{formatCurrency((item.price * item.quantity) - (item.discount || 0))}</span>
+                        <div className="flex items-center gap-1">
+                          <span className="font-semibold mr-2">{formatCurrency((item.price * item.quantity) - (item.discount || 0))}</span>
+                          <Button variant="ghost" size="icon" onClick={() => setEditingItem(item)} className="h-8 w-8 text-muted-foreground hover:text-foreground shrink-0">
+                            <Pencil className="w-4 h-4" />
+                          </Button>
                           <Button variant="ghost" size="icon" onClick={() => removeItem(item.id)} className="text-destructive hover:bg-destructive/10 h-8 w-8 shrink-0">
                             <Trash2 className="w-4 h-4" />
                           </Button>
@@ -511,7 +552,9 @@ export default function BillSplitter() {
                 <Download className="w-4 h-4 mr-2" /> Save Image
               </Button>
               
-              <Dialog>
+              <Dialog onOpenChange={(open) => {
+                if (open) generateShareUrl()
+              }}>
                 <DialogTrigger render={<Button className="rounded-xl h-12" />}>
                   <Share2 className="w-4 h-4 mr-2" /> Share
                 </DialogTrigger>
@@ -540,6 +583,115 @@ export default function BillSplitter() {
           </div>
         )}
       </div>
+
+      {/* Edit Person Dialog */}
+      <Dialog open={!!editingPerson} onOpenChange={(open) => !open && setEditingPerson(null)}>
+        <DialogContent className="sm:max-w-md rounded-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit Person</DialogTitle>
+          </DialogHeader>
+          {editingPerson && (
+             <div className="space-y-4 pt-4">
+                <div>
+                  <Label className="text-xs text-muted-foreground mb-1 block">Name</Label>
+                  <Input 
+                    value={editingPerson.name} 
+                    onChange={(e) => setEditingPerson({...editingPerson, name: e.target.value})}
+                    onKeyDown={(e) => e.key === 'Enter' && saveEditedPerson()}
+                  />
+                </div>
+                <Button onClick={saveEditedPerson} className="w-full rounded-xl">Save Changes</Button>
+             </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Item Dialog */}
+      <Dialog open={!!editingItem} onOpenChange={(open) => !open && setEditingItem(null)}>
+        <DialogContent className="sm:max-w-md rounded-2xl">
+          <DialogHeader>
+            <DialogTitle>Edit Item</DialogTitle>
+          </DialogHeader>
+          {editingItem && (
+             <div className="space-y-4 pt-4">
+                <div className="grid grid-cols-12 gap-3">
+                  <div className="col-span-12">
+                    <Label className="text-xs text-muted-foreground mb-1 block">Item Name</Label>
+                    <Input 
+                      value={editingItem.name} 
+                      onChange={(e) => setEditingItem({...editingItem, name: e.target.value})}
+                    />
+                  </div>
+                  <div className="col-span-5">
+                    <Label className="text-xs text-muted-foreground mb-1 block">Price</Label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">Rp</span>
+                      <Input 
+                        type="number" 
+                        value={editingItem.price || ''}
+                        onChange={(e) => setEditingItem({...editingItem, price: parseFloat(e.target.value) || 0})}
+                        className="pl-8"
+                      />
+                    </div>
+                  </div>
+                  <div className="col-span-3">
+                    <Label className="text-xs text-muted-foreground mb-1 block">Qty</Label>
+                    <Input 
+                      type="number" 
+                      min="1"
+                      value={editingItem.quantity || ''}
+                      onChange={(e) => setEditingItem({...editingItem, quantity: parseInt(e.target.value) || 1})}
+                    />
+                  </div>
+                  <div className="col-span-4">
+                    <Label className="text-xs text-muted-foreground mb-1 block">Disc (Opt)</Label>
+                    <div className="relative">
+                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground text-xs">Rp</span>
+                      <Input 
+                        type="number" 
+                        value={editingItem.discount || ''}
+                        onChange={(e) => setEditingItem({...editingItem, discount: parseFloat(e.target.value) || 0})}
+                        className="pl-7"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {people.length > 0 && (
+                  <div>
+                    <Label className="text-xs text-muted-foreground mb-2 block">Shared by</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {people.map(person => {
+                        const isSelected = editingItem.sharedBy.includes(person.id)
+                        return (
+                          <button
+                            key={person.id}
+                            onClick={() => {
+                              if (isSelected) {
+                                setEditingItem({...editingItem, sharedBy: editingItem.sharedBy.filter(id => id !== person.id)})
+                              } else {
+                                setEditingItem({...editingItem, sharedBy: [...editingItem.sharedBy, person.id]})
+                              }
+                            }}
+                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors flex items-center gap-1
+                              ${isSelected 
+                                ? 'bg-primary text-primary-foreground' 
+                                : 'bg-muted text-muted-foreground hover:bg-muted/80'}`}
+                          >
+                            {isSelected && <Check className="w-3 h-3" />}
+                            {person.name}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+                
+                <Button onClick={saveEditedItem} disabled={editingItem.sharedBy.length === 0} className="w-full rounded-xl">Save Changes</Button>
+             </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
